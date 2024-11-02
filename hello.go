@@ -217,7 +217,7 @@ func getMACAddress(ip string) (string, error) {
 	// var filed int
 
 	switch myos := runtime.GOOS; myos {
-	case "widows":
+	case "windows":
 		out, err = exec.Command("arp", "-a", ip).Output()
 		// filed = 2
 	case "plan9":
