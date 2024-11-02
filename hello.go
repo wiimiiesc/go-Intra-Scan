@@ -212,7 +212,23 @@ func getIPStatus(ip string) string {
 // 获取 MAC 地址
 func getMACAddress(ip string) (string, error) {
 	// 执行 arp 命令
-	out, err := exec.Command("arp", "-a", ip).Output()
+	var out []byte
+	var err error
+	// var filed int
+
+	switch myos := runtime.GOOS; myos {
+	case "widows":
+		out, err = exec.Command("arp", "-a", ip).Output()
+		// filed = 2
+	case "plan9":
+		out, err = exec.Command("arp", "-a", ip).Output()
+		// filed = 2
+	case "linux":
+		out, err = exec.Command("arp", "-n", ip).Output()
+		// filed = 3
+
+	}
+
 	if err != nil {
 		return "未找到", fmt.Errorf("执行 arp 命令失败: %v", err)
 
