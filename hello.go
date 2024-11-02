@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"log"
@@ -11,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-ping/ping"
 )
 
 var chans chan struct{}
@@ -22,12 +21,24 @@ var netDetails []map[string]string
 var ouiDB map[string]string
 var lineNumber int
 var lock *sync.RWMutex
+var resolver net.Resolver
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	chans = make(chan struct{}, 3000)
 	ouiDB, _ = loadOUIDatabase("oui.csv")
 	lock = &sync.RWMutex{}
+
+	resolver = net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout: time.Second,
+			}
+			// 使用指定的 DNS 服务器
+			return d.DialContext(ctx, network, "8.8.8.8")
+		},
+	}
 
 	fmt.Println("------------------------------------------------------------")
 	fmt.Println("行数\t状态\t\t名称\t\t\t\tIP\t\t\tMac\t\t\t制造商\n")
@@ -145,19 +156,15 @@ func scanDevices(ipRange []string) {
 				return
 			}
 
-			var hostNames []string
-
-			hostNames, err := net.LookupAddr(ip)
-			if err != nil {
-				hostNames = []string{ip}
-			}
-
 			status := getIPStatus(ip)
+
 			if status == "在线" || status == "离线" {
 				mac, _ := getMACAddress(ip)
 				manufacturer := getManufacturer(mac)
+				hostNames := []string{resolveHostname(ip)}
 				lock.Lock()
 				lineNumber++
+
 				fmt.Printf("%v\t%s\t\t%s\t\t%s\t\t%s\t\t%s\n", lineNumber, status, hostNames[0], ip, mac, manufacturer)
 				lock.Unlock()
 
@@ -166,48 +173,133 @@ func scanDevices(ipRange []string) {
 	}
 }
 
-// 使用 ping 库获取 IP 地址的状态
-
-func getIPStatus(ip string) string {
-	pinger, err := ping.NewPinger(ip)
-
-	if err != nil {
-		return "Inactive"
-	}
-	pinger.Count = 1
-	pinger.Timeout = time.Second * 1
-	pinger.SetPrivileged(true)
-
-	err = pinger.Run() // Blocks until finished.
-	if err != nil {
-		return "Inactive"
-	}
-	stats := pinger.Statistics()
-	if stats.PacketsRecv > 0 {
-		return "在线"
+// 主机名解析：尝试多种方式获取主机名
+func resolveHostname(ip string) string {
+	// 1. DNS 反向解析
+	if names, err := resolver.LookupAddr(context.Background(), ip); err == nil && len(names) > 0 {
+		return names[0]
 	}
 
-	if stats.PacketsRecv == 0 {
-		return "Inactive"
+	// 2. NetBIOS 名称解析 (Windows)
+	if runtime.GOOS == "windows" {
+		if netbiosName := getNetBIOSName(ip); netbiosName != "" {
+			return netbiosName
+		}
 	}
 
-	return "离线"
+	// 3. ARP 表查询
+	if arpName, _ := lookupARP(ip); arpName != "" {
+		return arpName
+	}
+
+	return "未知主机"
 }
 
+// 获取 NetBIOS 名称 (Windows)
+func getNetBIOSName(ip string) string {
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("nbtstat", "-A", ip).CombinedOutput()
+		if err != nil {
+			return ""
+		}
+
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "<00>") && strings.Contains(line, "UNIQUE") {
+				fields := strings.Fields(line)
+				if len(fields) >= 1 {
+					return fields[0]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// 从 ARP 表查询主机名
+func lookupARP(ip string) (string, error) {
+	var out []byte
+	var err error
+
+	switch runtime.GOOS {
+	case "windows":
+		out, err = exec.Command("arp", "-a").CombinedOutput()
+	case "linux":
+		out, err = exec.Command("ip", "neigh").CombinedOutput()
+	default:
+		return "", fmt.Errorf("不支持的操作系统")
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, ip) {
+			fields := strings.Fields(line)
+			if len(fields) >= 1 {
+				return fields[0], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("未找到 ARP 记录")
+}
+
+// 使用 ping 库获取 IP 地址的状态
+
 // func getIPStatus(ip string) string {
-// 	out, err := exec.Command("ping w 1000 n 1", ip).Output()
+// 	pinger, err := ping.NewPinger(ip)
+
 // 	if err != nil {
-// 		return "未找到"
+// 		return "Inactive"
 // 	}
-// 	if strings.Contains(string(out), "Received") && strings.Contains(string(out), "TTL") {
+// 	pinger.Count = 1
+// 	pinger.Timeout = time.Second * 1
+// 	pinger.SetPrivileged(true)
+
+// 	err = pinger.Run() // Blocks until finished.
+// 	if err != nil {
+// 		return "Inactive"
+// 	}
+// 	stats := pinger.Statistics()
+// 	if stats.PacketsRecv > 0 {
 // 		return "在线"
 // 	}
-// 	if strings.Contains(string(out), "not find host") {
-// 		return "离线"
 
+// 	if stats.PacketsRecv == 0 {
+// 		return "Inactive"
 // 	}
-// 	return "未找到"
+
+// 	return "离线"
 // }
+
+func getIPStatus(ip string) string {
+	var out []byte
+	var err error
+
+	switch runtime.GOOS {
+	case "windows":
+		out, err = exec.Command("ping", "-w", "1000", "-n", "1", ip).Output()
+	case "linux":
+		out, err = exec.Command("ping", "-W", "1", "-c", "1", ip).Output()
+	default:
+		return "未知操作系统"
+	}
+
+	if err != nil {
+		return "未找到"
+	}
+
+	if strings.Contains(string(out), "Received") || strings.Contains(string(out), "ttl") {
+		return "在线"
+	}
+	if strings.Contains(string(out), "请求超时") || strings.Contains(string(out), "timeout") {
+		return "离线"
+	}
+
+	return "未找到"
+}
 
 // 获取 MAC 地址
 func getMACAddress(ip string) (string, error) {
