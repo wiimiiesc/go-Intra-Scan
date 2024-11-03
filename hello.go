@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-ping/ping"
 )
 
 var chans chan struct{}
@@ -61,7 +63,6 @@ func main() {
 		}
 		ips = append(ips, ipRange...)
 	}
-
 	scanDevices(ips)
 
 	wg.Wait()
@@ -248,58 +249,58 @@ func lookupARP(ip string) (string, error) {
 
 // 使用 ping 库获取 IP 地址的状态
 
-// func getIPStatus(ip string) string {
-// 	pinger, err := ping.NewPinger(ip)
-
-// 	if err != nil {
-// 		return "Inactive"
-// 	}
-// 	pinger.Count = 1
-// 	pinger.Timeout = time.Second * 1
-// 	pinger.SetPrivileged(true)
-
-// 	err = pinger.Run() // Blocks until finished.
-// 	if err != nil {
-// 		return "Inactive"
-// 	}
-// 	stats := pinger.Statistics()
-// 	if stats.PacketsRecv > 0 {
-// 		return "在线"
-// 	}
-
-// 	if stats.PacketsRecv == 0 {
-// 		return "Inactive"
-// 	}
-
-// 	return "离线"
-// }
-
 func getIPStatus(ip string) string {
-	var out []byte
-	var err error
-
-	switch runtime.GOOS {
-	case "windows":
-		out, err = exec.Command("ping", "-w", "1000", "-n", "1", ip).Output()
-	case "linux":
-		out, err = exec.Command("ping", "-W", "1", "-c", "1", ip).Output()
-	default:
-		return "未知操作系统"
-	}
-
+	pinger, err := ping.NewPinger(ip)
 	if err != nil {
 		return "未找到"
 	}
+	pinger.Count = 1
+	pinger.Timeout = time.Second * 1
+	pinger.SetPrivileged(true)
 
-	if strings.Contains(string(out), "Received") || strings.Contains(string(out), "ttl") {
+	err = pinger.Run() // Blocks until finished.
+	if err != nil {
+		return "未找到"
+	}
+	stats := pinger.Statistics()
+	if stats.PacketsRecv > 0 {
 		return "在线"
 	}
-	if strings.Contains(string(out), "请求超时") || strings.Contains(string(out), "timeout") {
-		return "离线"
-	}
+
+	// if stats.PacketsRecv == 0 {
+	// 	return "离线"
+	// }
 
 	return "未找到"
 }
+
+// func getIPStatus(ip string) string {
+// 	var out []byte
+// 	var err error
+
+// 	switch runtime.GOOS {
+// 	case "windows":
+// 		out, err = exec.Command("ping", "-w", "1000", "-n", "1", ip).Output()
+// 	case "linux":
+// 		out, err = exec.Command("ping", "-W", "1", "-c", "1", ip).Output()
+// 	default:
+// 		out, err = exec.Command("ping", "-w", "1000", "-n", "1", ip).Output()
+// 	}
+
+// 	if err != nil {
+
+// 	}
+
+// 	if strings.Contains(string(out), "Received") || strings.Contains(string(out), "ttl") {
+// 		return "在线"
+// 	}
+// 	if strings.Contains(string(out), "请求超时") || strings.Contains(string(out), "timeout") {
+// 		return "离线"
+// 	}
+
+// 	return "未找到"
+
+// }
 
 // 获取 MAC 地址
 func getMACAddress(ip string) (string, error) {
