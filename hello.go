@@ -307,7 +307,6 @@ func getMACAddress(ip string) (string, error) {
 	// 执行 arp 命令
 	var out []byte
 	var err error
-	// var filed int
 
 	switch myos := runtime.GOOS; myos {
 	case "windows":
